@@ -7,7 +7,7 @@ name = "backsight"
 version = "0.1.0.dev0"
 description = "Test how AI agents behave when their tools fail, and replay any failure exactly from one seed."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = []
 

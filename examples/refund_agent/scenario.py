@@ -7,6 +7,8 @@ Try it:
 Then set FIXED = True (adds idempotency keys) and run:
     python -m backsight verify  examples/refund_agent/scenario.py
 """
+from __future__ import annotations
+
 import backsight
 from backsight import fakes, rule
 
