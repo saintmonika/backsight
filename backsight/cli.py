@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 
@@ -10,7 +11,7 @@ from .export import export_test
 from .faults import Fault, get_profile
 from .loader import load_scenario
 from .minimize import minimize
-from .runner import FAILED, run_one
+from .runner import FAILED, record, run_one
 
 
 def _profile(args, module) -> str:
@@ -138,6 +139,21 @@ def cmd_doctor(args) -> int:
     return 1
 
 
+def cmd_record(args) -> int:
+    m = load_scenario(args.scenario)
+    res = record(m.scenario, seed=args.seed)
+    if res.error:
+        print(f"The run hit an error while recording: {res.error}")
+    if not res.saved:
+        print("Nothing new to record. Tools need cassette= to be recorded.")
+        return 1 if res.error else 0
+    for path in res.saved:
+        print(f"Saved {os.path.relpath(path)}")
+    total = ", ".join(f"{tool}: {n}" for tool, n in sorted(res.calls.items()))
+    print(f"Recorded responses ({total}). Runs now replay these instead of calling the real API.")
+    return 1 if res.error else 0
+
+
 def cmd_hash(args) -> int:
     m = load_scenario(args.scenario)
     print(run_one(m.scenario, args.seed, m.RULES, args.profile).trace_hash)
@@ -191,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--seed", type=int, default=1)
     d.add_argument("--profile")
     d.set_defaults(fn=cmd_doctor)
+
+    rc = sub.add_parser("record", help="call the real API once and save responses for cassette tools")
+    rc.add_argument("scenario")
+    rc.add_argument("--seed", type=int, default=1)
+    rc.set_defaults(fn=cmd_record)
 
     h = sub.add_parser("_hash")
     h.add_argument("scenario")

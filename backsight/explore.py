@@ -10,7 +10,7 @@ from typing import Callable, Iterable
 from .faults import FAULT_KINDS, Fault, Profile, get_profile
 from .minimize import MinimizeResult, minimize
 from .rules import Rule
-from .runner import FAILED, PASSED, UNTESTED, RunResult, run_one
+from .runner import FAILED, PASSED, UNEXPLORED, UNTESTED, RunResult, run_one
 from .world import World
 
 STATE_DIR = ".backsight"
@@ -160,8 +160,11 @@ def format_report(report: Report, target: str = "<scenario>") -> str:
     lines = [
         f"profile {report.profile.name} · seeds {report.seeds[0]}-{report.seeds[0] + total - 1}",
         "",
-        f"{total} runs: {c[PASSED]} passed · {c[FAILED]} failed · {c[UNTESTED]} untested (no fault fired) · 0 unexplored",
+        f"{total} runs: {c[PASSED]} passed · {c[FAILED]} failed · {c[UNTESTED]} untested (no fault fired) · {c[UNEXPLORED]} unexplored",
     ]
+    if c[UNEXPLORED]:
+        first = next(r for r in report.results if r.status == UNEXPLORED)
+        lines.append(f"unexplored means a run needed a response nobody recorded, e.g. seed {first.seed}: {first.unexplored}")
     fc = report.fault_counts()
     active = [k for k in FAULT_KINDS if report.profile.rates.get(k)]
     if active:

@@ -1,0 +1,16 @@
+{
+  "tool": "lookup_order",
+  "entries": [
+    {
+      "args": {
+        "order_id": "1042"
+      },
+      "result": {
+        "order_id": "1042",
+        "amount": 40.0,
+        "email": "sam@example.com",
+        "status": "delivered"
+      }
+    }
+  ]
+}

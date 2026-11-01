@@ -15,8 +15,8 @@ Pure Python, standard library only. Status: early prototype (v0.1.0.dev0).
 ## Try the demo
 
 ```bash
-git clone <this repo> && cd backsight
-python -m backsight explore examples/refund_agent/scenario.py
+git clone https://github.com/saintmonika/backsight.git && cd backsight
+python3 -m backsight explore examples/refund_agent/scenario.py
 ```
 
 Real output:
@@ -39,8 +39,8 @@ BUG 2  never_refund_twice  (124 seeds)
 Replay the exact failure:
 
 ```
-$ python -m backsight replay examples/refund_agent/scenario.py 23
-seed 23 · flaky_network · seeded fault plan · trace b326391544333be6 (matches saved run)
+$ python3 -m backsight replay examples/refund_agent/scenario.py 23
+seed 23 · flaky_network · seeded fault plan · trace 0d199689aaaf39d8 (matches saved run)
 
    0.000s  agent -> lookup_order(order_id='1042')
    0.311s  agent <- lookup_order: ok
@@ -57,7 +57,7 @@ RULE BROKEN: never_refund_twice
 Cut a messy failure down to what matters:
 
 ```
-$ python -m backsight minimize examples/refund_agent/scenario.py 21 --rule never_refund_twice
+$ python3 -m backsight minimize examples/refund_agent/scenario.py 21 --rule never_refund_twice
 seed 21 · rule never_refund_twice · 3 fault(s) cut to 1 in 4 reruns · confirmed 5/5
   cause: latency_spike on refund call #1
 ```
@@ -65,9 +65,9 @@ seed 21 · rule never_refund_twice · 3 fault(s) cut to 1 in 4 reruns · confirm
 Keep it as a regression test, fix it, and check the fix:
 
 ```bash
-python -m backsight export examples/refund_agent/scenario.py 23   # writes a pytest file
+python3 -m backsight export examples/refund_agent/scenario.py 23   # writes a pytest file
 # set FIXED = True in scenario.py (adds idempotency keys)
-python -m backsight verify examples/refund_agent/scenario.py
+python3 -m backsight verify examples/refund_agent/scenario.py
 # 243 of 243 saved failing seeds now pass.
 # No new failures in 1000 fresh seeds.
 ```
@@ -98,7 +98,26 @@ def scenario(world):
 ```
 
 - `trace.effects(kind)` is what really happened. `trace.seen_by_agent(tool)` is what the agent was told. Rules check effects.
-- Tools without a `sim=` fake refuse to run during a test unless you pass `allow_real=True`.
+- Tools without a `sim=` fake or a `cassette=` recording refuse to run during a test unless you pass `allow_real=True`.
+
+## Record real responses instead of writing fakes
+
+You don't need a fake for every API. Point a tool at a cassette file, run `record` once against the real API, and every run after replays those responses:
+
+```python
+@backsight.tool(timeout_s=2.0, cassette="cassettes/lookup_order.json")
+def lookup_order(order_id: str) -> dict:
+    return shop_api.get_order(order_id)   # called once, by `backsight record`
+```
+
+```bash
+python3 -m backsight record examples/refund_agent/scenario.py
+# Saved examples/refund_agent/cassettes/lookup_order.json
+```
+
+- Recording runs once with faults off. Tools with `sim=` fakes stay fake, so recording never refunds anyone.
+- For cassette tools that change something, add `effect="sms"` so rules can see the action happened.
+- If a run needs a response that was never recorded, it's marked **unexplored**, never passed, with the exact call that's missing.
 - Use `world.now()`, `world.sleep()`, `world.random("name")`, and `world.uuid()` instead of real time and randomness. **Strict mode** catches leaks and names the line and the fix: `agent.py:42 calls time.time(). Use world.now() so runs replay exactly.`
 
 ## Commands
@@ -111,22 +130,23 @@ def scenario(world):
 | `verify <scenario>` | Reruns saved failing seeds plus fresh ones after a fix |
 | `export <scenario> <seed>` | Writes a pytest regression test for that failure |
 | `doctor <scenario>` | Checks the same seed gives the same trace, including in a separate process |
+| `record <scenario>` | Calls the real API once and saves responses for `cassette=` tools |
 
 ## What it promises, exactly
 
 - **Same code, same fixtures, same seed: same trace.** Only for what flows through Backsight. `doctor` checks this.
 - **Minimized means locally minimal:** no single remaining fault can be removed and still break the rule. Not necessarily the smallest possible set.
 - **`verify` gives evidence, not proof:** "243 of 243 failing seeds pass, no new failures in 1000 fresh seeds." Backsight never says "bug-free."
-- **Every run gets a result:** passed, failed, untested (no fault fired), or unexplored (reached a model state that was never recorded; applies once model replay ships).
+- **Every run gets a result:** passed, failed, untested (no fault fired), or unexplored (needed a response that was never recorded).
 
 ## Not built yet
 
-Recording real tool responses as cassettes (`backsight record`), record and replay for live model calls, parallel exploration, framework adapters, and MCP wrapping. Strict mode doesn't catch `datetime.now()` yet.
+Record and replay for live model calls (OpenAI-compatible APIs first), parallel exploration, framework adapters, and MCP wrapping. Strict mode doesn't catch `datetime.now()` yet.
 
 ## Tests
 
 ```bash
-python -m pytest -q
+python3 -m pytest -q
 ```
 
 Includes a hollowness check: disable timeout-after-effect inside the library and three tests fail.

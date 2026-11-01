@@ -5,21 +5,24 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from . import strict
-from .faults import Fault, FaultPlan, Profile, get_profile
+from .cassettes import CassetteMiss
+from .faults import CALM, Fault, FaultPlan, Profile, get_profile
 from .rules import Rule, RuleBroken
 from .trace import Trace
 from .world import World
 
-PASSED, FAILED, UNTESTED = "passed", "failed", "untested"
+PASSED, FAILED, UNTESTED, UNEXPLORED = "passed", "failed", "untested", "unexplored"
 
 
 @dataclass
 class RunResult:
     seed: int
     profile: str
-    status: str  # passed | failed | untested (passed, but no fault fired)
+    # passed | failed | untested (passed, no fault fired) | unexplored (needed an unrecorded response)
+    status: str
     broken: list[str] = field(default_factory=list)
     crash: str | None = None
+    unexplored: str | None = None
     faults: list[Fault] = field(default_factory=list)
     trace: Trace = field(default_factory=Trace)
     pinned: bool = False
@@ -68,8 +71,19 @@ def run_one(
             broken.append(e.rule.name)
         except strict.DeterminismLeak:
             raise
+        except CassetteMiss:
+            pass  # handled below: the run is unexplored, not failed
         except Exception as e:  # an uncaught exception in the agent is a failure
             crash = f"{type(e).__name__}: {e}"
+
+    if world.cassette_miss is not None:
+        # The run reached a call nobody recorded. It can't continue exactly,
+        # so it proves nothing either way. Never count it as passed.
+        return RunResult(
+            seed=seed, profile=profile.name, status=UNEXPLORED,
+            unexplored=str(world.cassette_miss), faults=list(world.faults_fired),
+            trace=world.trace, pinned=pinned_set is not None,
+        )
 
     if crash:
         broken.append("crash")
@@ -98,3 +112,28 @@ def run_one(
         trace=world.trace,
         pinned=pinned_set is not None,
     )
+
+
+@dataclass
+class RecordResult:
+    saved: list[str]          # cassette files written
+    calls: dict[str, int]     # responses recorded per tool
+    error: str | None = None
+
+
+def record(scenario: Callable[[World], None], seed: int = 1) -> RecordResult:
+    """Run the scenario once with no faults, calling the real functions of
+    cassette tools and saving their responses. Fake (sim=) tools stay fake."""
+    world = World(seed, CALM, FaultPlan(seed, CALM, frozenset()), record=True)
+    error: str | None = None
+    with world:  # strict mode off: the real API is supposed to be reached here
+        try:
+            scenario(world)
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+    saved = world.save_cassettes()
+    calls: dict[str, int] = {}
+    for e in world.trace.events:
+        if e.kind == "seen" and e.tool and any(c.tool == e.tool for c in world._cassettes.values()):
+            calls[e.tool] = calls.get(e.tool, 0) + 1
+    return RecordResult([c.path for c in saved], calls, error)

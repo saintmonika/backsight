@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import contextvars
 import inspect
+from dataclasses import dataclass, field
 import random
 import uuid as _uuid
 from typing import Any, Callable
 
+from .cassettes import Cassette, CassetteMiss
 from .faults import ERROR, TIMEOUT_AFTER, TIMEOUT_BEFORE, Fault, FaultPlan, Profile, derive_seed
 from .trace import Trace
 
@@ -34,6 +36,17 @@ class RealCallBlocked(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str
+    real_fn: Callable[..., Any]
+    timeout_s: float | None = None
+    sim: Any = None
+    rates: dict[str, float] | None = field(default=None, hash=False)
+    cassette: str | None = None  # absolute path to recorded responses
+    effect: str | None = None    # effect kind to record when a cassette call succeeds
+
+
 class FakeClock:
     """Simulated time in whole milliseconds, so traces hash identically."""
 
@@ -47,16 +60,19 @@ class FakeClock:
 
 
 class World:
-    def __init__(self, seed: int, profile: Profile, plan: FaultPlan, allow_real: bool = False):
+    def __init__(self, seed: int, profile: Profile, plan: FaultPlan, allow_real: bool = False, record: bool = False):
         self.seed = seed
         self.profile = profile
         self.plan = plan
         self.allow_real = allow_real
+        self.record = record  # True only during `backsight record`
         self.clock = FakeClock()
         self.trace = Trace()
         self.faults_fired: list[Fault] = []
+        self.cassette_miss: CassetteMiss | None = None
         self._streams: dict[str, random.Random] = {}
         self._fakes: dict[type, Any] = {}
+        self._cassettes: dict[str, Cassette] = {}
         self._call_counts: dict[str, int] = {}
         self._token: contextvars.Token | None = None
 
@@ -103,24 +119,28 @@ class World:
             self._fakes[cls] = cls(self)
         return self._fakes[cls]
 
+    def cassette(self, path: str, tool: str) -> Cassette:
+        if path not in self._cassettes:
+            self._cassettes[path] = Cassette(path, tool)
+        return self._cassettes[path]
+
+    def save_cassettes(self) -> list[Cassette]:
+        saved = [c for c in self._cassettes.values() if c.dirty]
+        for c in saved:
+            c.save()
+        return saved
+
     # --- the tool proxy --------------------------------------------------
-    def call_tool(
-        self,
-        name: str,
-        args: dict[str, Any],
-        sim: Any,
-        timeout_s: float | None,
-        rates: dict[str, float] | None,
-        real_fn: Callable[..., Any],
-    ) -> Any:
+    def call_tool(self, spec: "ToolSpec", args: dict[str, Any]) -> Any:
+        name = spec.name
         call = self._call_counts.get(name, 0)
         self._call_counts[name] = call + 1
 
-        kind = self.plan.decide(name, call, len(self.faults_fired), rates)
+        kind = self.plan.decide(name, call, len(self.faults_fired), spec.rates)
         if kind:
             self.faults_fired.append(Fault(name, call, kind))
         latency = self.plan.latency_ms(name, call, kind)
-        timeout_ms = round(timeout_s * 1000) if timeout_s else None
+        timeout_ms = round(spec.timeout_s * 1000) if spec.timeout_s else None
 
         self.trace.add(self.clock.ms, "call", tool=name, call=call, args=dict(args))
 
@@ -134,7 +154,7 @@ class World:
             self._seen(name, call, "error", kind)
             raise ToolError(name, 503)
 
-        result = self._run(name, args, sim, real_fn)
+        result = self._run(spec, args)
 
         if kind == TIMEOUT_AFTER or (timeout_ms is not None and latency > timeout_ms):
             self.clock.advance_ms(timeout_ms or latency)
@@ -145,18 +165,33 @@ class World:
         self._seen(name, call, "ok", kind, result=result)
         return result
 
-    def _run(self, name: str, args: dict[str, Any], sim: Any, real_fn: Callable[..., Any]) -> Any:
-        if sim is None:
+    def _run(self, spec: "ToolSpec", args: dict[str, Any]) -> Any:
+        name = spec.name
+        if spec.cassette:
+            tape = self.cassette(spec.cassette, name)
+            if self.record:
+                result = spec.real_fn(**args)  # the one time the real API is called
+                tape.put(args, result)
+            else:
+                try:
+                    result = tape.get(args)
+                except CassetteMiss as miss:
+                    self.cassette_miss = miss  # remembered even if the agent swallows it
+                    raise
+            if spec.effect:
+                self.effect(spec.effect, **args)
+            return result
+        if spec.sim is None:
             if not self.allow_real:
                 raise RealCallBlocked(
-                    f"tool {name!r} has no sim= fake, so it would call the real system. "
-                    f"Give it a fake (for example @backsight.tool(sim=fakes.Payments)) "
-                    f"or pass allow_real=True if you really mean it."
+                    f"tool {name!r} has no sim= fake or cassette=, so it would call the real system. "
+                    f"Give it a fake (@backsight.tool(sim=fakes.Payments)), record its responses "
+                    f"(@backsight.tool(cassette='cassettes/{name}.json')), or pass allow_real=True."
                 )
-            return real_fn(**args)
-        if inspect.isclass(sim):
-            return getattr(self.fake(sim), name)(**args)
-        return sim(self, **args)
+            return spec.real_fn(**args)
+        if inspect.isclass(spec.sim):
+            return getattr(self.fake(spec.sim), name)(**args)
+        return spec.sim(self, **args)
 
     def _seen(self, name: str, call: int, outcome: str, fault: str | None, effect_applied=None, result=None) -> None:
         detail: dict[str, Any] = {"outcome": outcome}

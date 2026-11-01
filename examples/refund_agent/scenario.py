@@ -1,13 +1,20 @@
 """Backsight scenario: a support agent handles a refund request.
 
 Try it:
-    python -m backsight explore examples/refund_agent/scenario.py
-    python -m backsight replay  examples/refund_agent/scenario.py <seed> --minimal
+    python3 -m backsight explore examples/refund_agent/scenario.py
+    python3 -m backsight replay  examples/refund_agent/scenario.py <seed> --minimal
 
 Then set FIXED = True (adds idempotency keys) and run:
-    python -m backsight verify  examples/refund_agent/scenario.py
+    python3 -m backsight verify  examples/refund_agent/scenario.py
+
+lookup_order replays real responses from cassettes/lookup_order.json.
+To capture them again from the "real API" (orders_api.json here), run:
+    python3 -m backsight record  examples/refund_agent/scenario.py
 """
 from __future__ import annotations
+
+import json
+import os
 
 import backsight
 from backsight import fakes, rule
@@ -16,18 +23,19 @@ from agent import SupportAgent
 
 FIXED = False
 PROFILE = "flaky_network"
-
-Orders = fakes.Records.with_data(
-    {"1042": {"order_id": "1042", "amount": 40.0, "email": "sam@example.com", "status": "delivered"}},
-    name="Orders",
-)
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-# --- tools: the real bodies never run inside Backsight; the sim= fakes do --
+# --- tools ----------------------------------------------------------------
+# lookup_order: real responses, recorded once with `backsight record`.
+# refund and send_email change things, so they run against fakes that track
+# real effects. Their real bodies never run inside Backsight.
 
-@backsight.tool(timeout_s=2.0, sim=Orders)
+@backsight.tool(timeout_s=2.0, cassette="cassettes/lookup_order.json")
 def lookup_order(order_id: str) -> dict:
-    raise NotImplementedError("your real order API goes here")
+    # Stand-in for a real order API. Only called by `backsight record`.
+    with open(os.path.join(HERE, "orders_api.json")) as fh:
+        return json.load(fh)[order_id]
 
 
 @backsight.tool(timeout_s=2.0, sim=fakes.Payments)
